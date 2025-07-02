@@ -1,15 +1,20 @@
-# Dockerfile (Simple version for Go app - with tidy fix)
+# Dockerfile (Final, Robust Version)
 
 # Stage 1: Build the Go application
 FROM golang:1.21-alpine AS builder
 WORKDIR /app
-COPY go.mod go.sum ./
 
-# --- THIS IS THE FIX ---
+# Copy ONLY the module definition file first
+COPY go.mod ./
+
+# Copy the application code that uses the modules
+COPY main.go ./
+
+# THIS IS THE KEY: go mod tidy reads main.go, sees the imports,
+# and generates a perfect go.sum file with all dependencies.
 RUN go mod tidy
-# --- END FIX ---
 
-COPY . .
+# Now that dependencies are sorted, build the application.
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/bot .
 
 # Stage 2: Create the final small image
