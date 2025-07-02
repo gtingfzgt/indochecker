@@ -1,4 +1,4 @@
-# Dockerfile (This is the one that will work)
+# Dockerfile (Corrected based on the final error)
 
 # --- Stage 1: Build the 'checkdomain' tool ---
 FROM golang:1.21-alpine AS builder
@@ -9,14 +9,14 @@ WORKDIR /src/checkdomain
 # Clone the repository
 RUN git clone https://github.com/Skiddle-ID/checkdomain.git .
 
-# --- THE FINAL FIX ---
-# We need BOTH commands. First, create the module context.
+# --- THIS IS THE CORRECT COMBINATION ---
+# 1. Create the module context that the Go compiler needs.
 RUN go mod init checkdomain && go mod tidy
-# Second, build the correct source files WITHIN that module context.
-RUN go build -o /checkdomain ./cmd/checkdomain
+# 2. Build from the current directory ('.') where main.go actually is.
+RUN go build -o /checkdomain .
 
 
-# --- Stage 2: Build our bot application ---
+# --- Stage 2: Build our bot application (This part has always been correct) ---
 FROM golang:1.21-alpine
 
 WORKDIR /app
