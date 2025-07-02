@@ -1,10 +1,14 @@
-# Dockerfile (Simple version for Go app)
+# Dockerfile (Simple version for Go app - with tidy fix)
 
 # Stage 1: Build the Go application
 FROM golang:1.21-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
-RUN go mod download
+
+# --- THIS IS THE FIX ---
+RUN go mod tidy
+# --- END FIX ---
+
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/bot .
 
