@@ -5,6 +5,7 @@ FROM golang:1.21-alpine AS builder
 RUN apk add --no-cache git
 WORKDIR /src/checkdomain
 RUN git clone https://github.com/Skiddle-ID/checkdomain.git .
+RUN go mod init checkdomain && go mod tidy
 RUN go build -o /checkdomain .
 
 # --- Stage 2: Build our bot application ---
