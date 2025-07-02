@@ -1,4 +1,4 @@
-// main.go (New version using the public API)
+// main.go (API version with message chunking)
 package main
 
 import (
@@ -13,17 +13,17 @@ import (
 	"sync"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.comcom/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/robfig/cron/v3"
 )
 
 const domainsFilePath = "/data/domains.txt"
 const apiBaseURL = "https://check.skiddle.id/"
 const maxDomainsPerRequest = 30 // As per the API documentation
+const telegramMaxMsgLen = 4096
 
 var fileMutex = &sync.Mutex{}
 
-// This struct helps us parse the JSON response from the API
 type DomainStatus struct {
 	Blocked bool `json:"blocked"`
 }
@@ -37,10 +37,9 @@ func main() {
 	if err != nil {
 		log.Panic(err)
 	}
-	bot.Debug = true
+	bot.Debug = false // Set to false to reduce log spam
 	log.Printf("Authorized on account %s", bot.Self.UserName)
 
-	// Ensure the data directory and domains.txt file exist
 	if err := os.MkdirAll("/data", 0755); err != nil {
 		log.Panic("Failed to create data directory: ", err)
 	}
@@ -55,7 +54,7 @@ func main() {
 	})
 	c.Start()
 
-	sendMessage(bot, adminChatID, "✅ Bot started successfully! Using public API. Scheduled checks are active.")
+	sendMessage(bot, adminChatID, "✅ Bot (re)started! Using public API. Scheduled checks are active.")
 
 	u := tgbotapi.NewUpdate(0)
 	updates := bot.GetUpdatesChan(u)
@@ -69,24 +68,24 @@ func main() {
 		switch update.Message.Command() {
 		case "start":
 			msg.Text = "Hello! I'm your domain checker bot.\nCommands:\n/add <domain>\n/remove <domain>\n/list\n/checknow"
+			sendMessage(bot, adminChatID, msg.Text)
 		case "add":
-			msg.Text = addDomain(update.Message.CommandArguments())
+			sendMessage(bot, adminChatID, addDomain(update.Message.CommandArguments()))
 		case "remove":
-			msg.Text = removeDomain(update.Message.CommandArguments())
+			sendMessage(bot, adminChatID, removeDomain(update.Message.CommandArguments()))
 		case "list":
-			msg.Text = listDomains()
+			// *** MODIFIED *** Use chunking for the list command as well
+			go sendChunkedMessage(bot, adminChatID, listDomains(), "📋 Domains being checked")
 		case "checknow":
 			sendMessage(bot, adminChatID, "🚀 Starting manual check via API...")
 			go checkDomainsAndNotify(bot, adminChatID)
-			continue
 		default:
-			msg.Text = "I don't know that command."
+			sendMessage(bot, adminChatID, "I don't know that command.")
 		}
-		sendMessage(bot, adminChatID, msg.Text)
 	}
 }
 
-// The new check function that calls the web API
+// *** MODIFIED *** The check function now uses the chunking sender
 func checkDomainsAndNotify(bot *tgbotapi.BotAPI, chatID int64) {
 	domains, err := readDomains()
 	if err != nil {
@@ -99,9 +98,7 @@ func checkDomainsAndNotify(bot *tgbotapi.BotAPI, chatID int64) {
 	}
 
 	var resultsText strings.Builder
-	resultsText.WriteString("📄 Domain Check Results:\n\n")
 
-	// The API is limited to 30 domains per request, so we process in batches
 	for i := 0; i < len(domains); i += maxDomainsPerRequest {
 		end := i + maxDomainsPerRequest
 		if end > len(domains) {
@@ -110,24 +107,24 @@ func checkDomainsAndNotify(bot *tgbotapi.BotAPI, chatID int64) {
 		batch := domains[i:end]
 
 		url := fmt.Sprintf("%s?domains=%s&json=true", apiBaseURL, strings.Join(batch, ","))
-
-		httpClient := &http.Client{Timeout: 15 * time.Second}
+		httpClient := &http.Client{Timeout: 30 * time.Second} // Increased timeout for larger batches
 		resp, err := httpClient.Get(url)
 		if err != nil {
 			resultsText.WriteString(fmt.Sprintf("🚨 Failed to check batch: %v\n", err))
 			continue
 		}
-		defer resp.Body.Close()
 
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			resultsText.WriteString(fmt.Sprintf("🚨 Failed to read API response: %v\n", err))
+			resp.Body.Close()
 			continue
 		}
+		resp.Body.Close()
 
 		var statuses map[string]DomainStatus
 		if err := json.Unmarshal(body, &statuses); err != nil {
-			resultsText.WriteString(fmt.Sprintf("🚨 Failed to parse API JSON: %v\n", err))
+			resultsText.WriteString(fmt.Sprintf("🚨 Failed to parse API JSON for batch. Response: %s\nError: %v\n", string(body), err))
 			continue
 		}
 
@@ -140,10 +137,35 @@ func checkDomainsAndNotify(bot *tgbotapi.BotAPI, chatID int64) {
 		}
 	}
 
-	sendMessage(bot, chatID, resultsText.String())
+	sendChunkedMessage(bot, chatID, resultsText.String(), "📄 Domain Check Results")
 }
 
-// --- File handling and message functions remain the same ---
+// *** NEW FUNCTION *** Splits a long message into multiple smaller ones.
+func sendChunkedMessage(bot *tgbotapi.BotAPI, chatID int64, text string, prefix string) {
+	if text == "" {
+		return
+	}
+	lines := strings.Split(text, "\n")
+	var currentMessage strings.Builder
+
+	fullPrefix := prefix + "\n"
+	currentMessage.WriteString(fullPrefix)
+
+	for _, line := range lines {
+		if currentMessage.Len()+len(line)+1 > telegramMaxMsgLen {
+			sendMessage(bot, chatID, currentMessage.String())
+			currentMessage.Reset()
+			currentMessage.WriteString(fullPrefix)
+		}
+		currentMessage.WriteString(line + "\n")
+	}
+	if currentMessage.Len() > len(fullPrefix) {
+		sendMessage(bot, chatID, currentMessage.String())
+	}
+}
+
+
+// --- Helper functions ---
 
 func sendMessage(bot *tgbotapi.BotAPI, chatID int64, text string) {
 	msg := tgbotapi.NewMessage(chatID, text)
@@ -172,7 +194,8 @@ func writeDomains(domains []string) error {
 
 func addDomain(domain string) string {
 	if domain == "" { return "Usage: /add example.com" }
-	domains, _ := readDomains()
+	domains, err := readDomains()
+	if err != nil { return "Error reading domain list." }
 	for _, d := range domains {
 		if d == domain { return fmt.Sprintf("Domain '%s' is already in the list.", domain) }
 	}
@@ -183,7 +206,8 @@ func addDomain(domain string) string {
 
 func removeDomain(domain string) string {
 	if domain == "" { return "Usage: /remove example.com" }
-	domains, _ := readDomains()
+	domains, err := readDomains()
+	if err != nil { return "Error reading domain list." }
 	var newDomains []string
 	found := false
 	for _, d := range domains {
@@ -196,7 +220,8 @@ func removeDomain(domain string) string {
 }
 
 func listDomains() string {
-	domains, _ := readDomains()
+	domains, err := readDomains()
+	if err != nil { return "Error reading domain list." }
 	if len(domains) == 0 { return "The domain list is empty." }
-	return "Domains being checked:\n" + strings.Join(domains, "\n")
+	return strings.Join(domains, "\n")
 }
